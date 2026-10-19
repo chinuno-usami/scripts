@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__LABEL__</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/libexec/wireguard-watchdog/check.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>WG_WATCHDOG_IF</key>
+        <string>__IF__</string>
+        <key>WG_WATCHDOG_MAX_AGE</key>
+        <string>180</string>
+        <key>WG_WATCHDOG_FAILS</key>
+        <string>2</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/wireguard-watchdog.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/wireguard-watchdog.err</string>
+</dict>
+</plist>

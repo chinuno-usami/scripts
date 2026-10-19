@@ -1,0 +1,27 @@
+# --- MemTest86 outputs -------------------------------------------------------
+# Real logs/reports contain SMBIOS baseboard/system/RAM serial numbers and
+# part numbers. Never commit them to a public repository.
+MemTest86-*.log
+MemTest86-Report-*.html
+MemTest86-Report-*.htm
+
+# --- Machine-specific exports / dumps ----------------------------------------
+*.reg
+enum_badmemory*.txt
+
+# --- Generated helper scripts -------------------------------------------------
+fix_badram.cmd
+*.generated.cmd
+
+# --- Python -------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- Editors / OS -------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,12 @@
+# WireGuard 配置含私钥，永远不要提交
+*.conf
+*.conf.bak
+*.zip
+
+# Windows/编辑器垃圾
+*.bak
+*.tmp
+
+# macOS
+.DS_Store
+._*

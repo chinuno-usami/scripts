@@ -1,0 +1,23 @@
+# ==== 凭证，绝对不能提交 ====
+# cookie.txt 里的 SESSDATA 等同于账号密码（有效期可长达数月）
+cookie.txt
+cookie.txt.bak
+cookie*.bak
+cookie*.tmp
+# 保留脱敏示例文件
+!cookie.example.txt
+
+# ==== 运行产物 ====
+log.txt
+*.log
+output/
+out/
+*.json.out
+
+# ==== 编辑器 / 系统杂项 ====
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/

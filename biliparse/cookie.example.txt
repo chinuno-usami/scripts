@@ -1,0 +1,5 @@
+# cookie.txt 脱敏示例 —— 复制成 cookie.txt 后填入真实值
+# 真实格式：单行，字段之间用 "; " 分隔
+# 关键：SESSDATA 是 HttpOnly，浏览器控制台 document.cookie 读不到，
+#       必须从 DevTools -> Network -> 任一 api.bilibili.com 请求 -> Request Headers -> Cookie 整行复制
+SESSDATA=xxxxxxxx%2C1700000000%2Cxxxxx%2AxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxIIEC; buvid3=XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXXinfoc; buvid4=XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXXinfoc

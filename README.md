@@ -11,3 +11,8 @@
 ## wireguard-watchdog
 
 mac上wireguard掉线重启。解决ddns对端掉线ip变化后无法恢复连接问题
+
+## biliparse
+
+b站动态解析，自用接入huginn解析转为rss。  
+早期人工手搓，现在出问题后用ai维护

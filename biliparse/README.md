@@ -33,7 +33,7 @@
   {
     "link": "https://t.bilibili.com/1261622604304744450",
     "author_name": "谜之声",
-    "timestamp": "Wed, 21, Oct 2026 11:40:03 GMT",
+      "timestamp": "Wed, 21 Oct 2026 11:40:03 GMT",
     "title": "【谜之声】居然是认识的开发者！当年的《乌鸦旅馆》还挺喜欢的…",
     "desc": "<br><img src=\"https://i0.hdslb.com/…\" referrerpolicy=\"no-referrer\"><br>标题：…<br>链接：<a href=\"…\">…</a>"
   }
@@ -41,7 +41,7 @@
 ```
 
 - `link` / `title` / `desc` 可直接喂给 RSS 的 `description`（`desc` 是 HTML 片段）
-- `timestamp` 为 RFC 1123 格式（GMT），对应 `module_author.pub_ts`
+- `timestamp` 为 RFC 1123 / RFC 2822 格式（GMT），对应 `module_author.pub_ts`
 - `DYNAMIC_TYPE_LIVE_RCMD`（直播推荐位）会被过滤掉
 
 ## cookie.txt 怎么来（最容易踩的坑）

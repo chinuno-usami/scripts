@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 require 'net/http'
 require 'json'
+require 'cgi'
 require 'date'
 #require 'pp'
 #require 'pry'
@@ -8,6 +9,7 @@ require 'date'
 def url2Href(url)
   return '' if url.nil? || url.empty?
   link = url.start_with?('http://', 'https://') ? url : ('https:' + url)
+  link = CGI.escapeHTML(link)
   '<a href="' + link + '">' + link + '</a>'
 end
 
@@ -15,100 +17,118 @@ def s(v)
   v.nil? ? '' : v.to_s
 end
 
+# HTML 转义：只转义 B 站返回的「值」（文本 / URL），
+# 脚本自己拼接的 <br>/<img>/<a> 结构不受影响，
+# 因此正文里正常该显示的图片、链接不会失效。
+# （URL 里的 & 转成 &amp; 是 HTML 属性里的正确写法，浏览器会还原后再请求）
+def h(v)
+  CGI.escapeHTML(s(v))
+end
+
+def img(url)
+  return '' if url.nil? || url.empty?
+  '<br><img src="' + h(url) + '" referrerpolicy="no-referrer">'
+end
+
+# 标题兜底：正文没有文字时用 extra 补全
+def set_title_extra(ret, extra)
+  extra = s(extra)
+  return if extra.empty?
+  if ret['title'] == '【' + ret['author_name'] + '】'
+    ret['title'] += extra
+  end
+end
+
 def parseItem(item)
-  ret = Hash.new()
+  ret = {}
   ret['link'] = 'https://t.bilibili.com/' + item['id_str']
   author = item['modules']['module_author']
   ret['author_name'] = author['name']
   t = Time.at(author['pub_ts'].to_i()).gmtime
-  ret['timestamp'] = t.strftime '%a, %d, %b %Y %H:%M:%S GMT'
+  # RFC 1123 / RFC 2822 格式：%d 与 %b 之间没有逗号
+  ret['timestamp'] = t.strftime '%a, %d %b %Y %H:%M:%S GMT'
   desc = item['modules']['module_dynamic']['desc']
   maj = item['modules']['module_dynamic']['major']
   ret['title'] = '【' + ret['author_name'] + '】'
   ret['desc'] = ''
   if desc && desc['text']
     ret['title'] = ret['title'] + desc['text']
-    ret['desc'] = desc['text']
+    ret['desc'] = h(desc['text'])
   end
   addition = item['modules']['module_dynamic']['additional']
   if addition
     if addition['type'] == 'ADDITIONAL_TYPE_UGC'
-      ugc = addition['ugc']
-      ret['desc'] = ret['desc'] + '<br><img src="' + ugc['cover'] + '" referrerpolicy="no-referrer">'
-      ret['desc'] = ret['desc'] + '<br>标题：' + s(ugc['title'])
-      ret['desc'] = ret['desc'] + '<br>时长：' + s(ugc['duration'])
-      ret['desc'] = ret['desc'] + '<br>：' + s(ugc['desc_second'])
-      ret['desc'] = ret['desc'] + '<br>链接：' + url2Href(ugc['jump_url'])
+      ugc = addition['ugc'] || {}
+      ret['desc'] += img(ugc['cover'])
+      ret['desc'] += '<br>标题：' + h(ugc['title'])
+      ret['desc'] += '<br>时长：' + h(ugc['duration'])
+      ret['desc'] += '<br>：' + h(ugc['desc_second'])
+      ret['desc'] += '<br>链接：' + url2Href(ugc['jump_url'])
     elsif addition['type'] == 'ADDITIONAL_TYPE_GOODS'
-      goods = addition['goods']
-      ret['desc'] = ret['desc'] + '<br>' + s(goods['head_text'])
+      goods = addition['goods'] || {}
+      head = s(goods['head_text'])
+      ret['desc'] += '<br>' + h(head) unless head.empty?
       for g in (goods['items'] || [])
-        ret['desc'] = ret['desc'] + '<br><img src="' + s(g['cover']) + '" referrerpolicy="no-referrer">'
-        ret['desc'] = ret['desc'] + '<br>商品：' + s(g['name']) + ' ' + s(g['price'])
-        ret['desc'] = ret['desc'] + '<br>链接：' + url2Href(g['jump_url'])
+        ret['desc'] += img(g['cover'])
+        ret['desc'] += '<br>商品：' + h(g['name']) + ' ' + h(g['price'])
+        ret['desc'] += '<br>链接：' + url2Href(g['jump_url'])
       end
     else
-      ret['desc'] = ret['desc'] + '<br>未处理类型：' + addition['type']
+      ret['desc'] += '<br>未处理类型：' + h(addition['type'])
     end
   end
   if maj
-    #binding.pry
     if maj['type'] == 'MAJOR_TYPE_ARCHIVE'
-      arch = maj['archive']
-      ret['desc'] = ret['desc'] + '<br><img src="' + arch['cover'] + '" referrerpolicy="no-referrer">'
-      ret['desc'] = ret['desc'] + '<br>标题：' + s(arch['title'])
-      ret['desc'] = ret['desc'] + '<br>时长：' + s(arch['duration_text'])
-      ret['desc'] = ret['desc'] + '<br>弹幕：' + s(arch['stat']['danmaku']) + ' 播放:' + s(arch['stat']['play'])
-      ret['desc'] = ret['desc'] + '<br>简介：' + s(arch['desc'])
-      ret['desc'] = ret['desc'] + '<br>链接：' + url2Href(arch['jump_url'])
-      if ret['title'] == '【' + ret['author_name'] + '】'
-        ret['title'] = ret['title'] + s(arch['title'])
-      end
+      arch = maj['archive'] || {}
+      stat = arch['stat'] || {}
+      ret['desc'] += img(arch['cover'])
+      ret['desc'] += '<br>标题：' + h(arch['title'])
+      ret['desc'] += '<br>时长：' + h(arch['duration_text'])
+      ret['desc'] += '<br>弹幕：' + h(stat['danmaku']) + ' 播放:' + h(stat['play'])
+      ret['desc'] += '<br>简介：' + h(arch['desc'])
+      ret['desc'] += '<br>链接：' + url2Href(arch['jump_url'])
+      set_title_extra(ret, arch['title'])
     elsif maj['type'] == 'MAJOR_TYPE_DRAW'
-      for pic in maj['draw']['items']
-        #binding.pry
-        ret['desc'] = ret['desc'] + '<br><img src="' + pic['src'] + '" referrerpolicy="no-referrer">'
+      draw = maj['draw'] || {}
+      for pic in (draw['items'] || [])
+        ret['desc'] += img(pic['src'])
       end
     elsif maj['type'] == 'MAJOR_TYPE_OPUS'
       # itemOpusStyle: DRAW/ARTICLE 等已统一为 OPUS，正文在 summary，module_dynamic.desc 常为 null
-      opus = maj['opus']
-      summary_text = opus.dig('summary', 'text').to_s
-      if ret['title'] == '【' + ret['author_name'] + '】'
-        title_extra = (!opus['title'].nil? && !opus['title'].empty?) ? opus['title'] : summary_text
-        ret['title'] = ret['title'] + title_extra
-      end
+      opus = maj['opus'] || {}
+      summary_text = s(opus.dig('summary', 'text'))
+      title_extra = s(opus['title'])
+      title_extra = summary_text if title_extra.empty?
+      set_title_extra(ret, title_extra)
       for pic in (opus['pics'] || [])
-          ret['desc'] = ret['desc'] + '<br><img src="' + pic['url'] + '" referrerpolicy="no-referrer">'
+        ret['desc'] += img(pic['url'])
       end
-      if opus['title'] != nil && !opus['title'].empty?
-          ret['desc'] = ret['desc'] + '<br>标题：' + opus['title']
-      end
-      ret['desc'] = ret['desc'] + '<br>链接：' + url2Href(opus['jump_url'])
-      ret['desc'] = ret['desc'] + '<br>摘要：' + summary_text unless summary_text.empty?
+      ret['desc'] += '<br>标题：' + h(opus['title']) unless s(opus['title']).empty?
+      ret['desc'] += '<br>链接：' + url2Href(opus['jump_url'])
+      ret['desc'] += '<br>摘要：' + h(summary_text) unless summary_text.empty?
     elsif maj['type'] == 'MAJOR_TYPE_ARTICLE'
       # 兼容未开启 itemOpusStyle 时的专栏格式
-      art = maj['article']
-      ret['desc'] = ret['desc'] + '<br><img src="' + s(art['covers']&.first || art['cover']) + '" referrerpolicy="no-referrer">' if art['covers'] || art['cover']
-      ret['desc'] = ret['desc'] + '<br>标题：' + s(art['title'])
-      ret['desc'] = ret['desc'] + '<br>简介：' + s(art['desc'])
-      ret['desc'] = ret['desc'] + '<br>链接：' + url2Href(art['jump_url'])
-      if ret['title'] == '【' + ret['author_name'] + '】'
-        ret['title'] = ret['title'] + s(art['title'])
-      end
+      art = maj['article'] || {}
+      cover = art['covers']&.first || art['cover']
+      ret['desc'] += img(cover)
+      ret['desc'] += '<br>标题：' + h(art['title'])
+      ret['desc'] += '<br>简介：' + h(art['desc'])
+      ret['desc'] += '<br>链接：' + url2Href(art['jump_url'])
+      set_title_extra(ret, art['title'])
     elsif maj['type'] == 'MAJOR_TYPE_MUSIC'
-      music = maj['music']
-      ret['desc'] = ret['desc'] + '<br><img src="' + music['cover'] + '" referrerpolicy="no-referrer">'
-      ret['desc'] = ret['desc'] + '<br>标题：' + s(music['title'])
-      ret['desc'] = ret['desc'] + '<br>链接：' + url2Href(music['jump_url'])
+      music = maj['music'] || {}
+      ret['desc'] += img(music['cover'])
+      ret['desc'] += '<br>标题：' + h(music['title'])
+      ret['desc'] += '<br>链接：' + url2Href(music['jump_url'])
     else
-      ret['desc'] = ret['desc'] + '<br>未处理类型：' + maj['type']
+      ret['desc'] += '<br>未处理类型：' + h(maj['type'])
     end
   end
   if item['type'] == 'DYNAMIC_TYPE_FORWARD' && item['orig']
     subItem = parseItem item['orig']
-    ret['desc'] = ret['desc'] + '<br><br>转发内容：'
-    ret['desc'] = ret['desc'] + '<br>作者：' + subItem['author_name']
-    ret['desc'] = ret['desc'] + '<br>' + subItem['desc']
+    ret['desc'] += '<br><br>转发内容：'
+    ret['desc'] += '<br>作者：' + h(subItem['author_name'])
+    ret['desc'] += '<br>' + subItem['desc']
   end
   ret
 end
@@ -163,7 +183,8 @@ req['sec-fetch-site'] = 'same-site'
 req['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36'
 
 
-res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') { |http|
+res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https',
+                      open_timeout: 10, read_timeout: 15) { |http|
   http.request(req)
 }
 
@@ -171,8 +192,10 @@ res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') { 
 j = begin
   JSON.parse(res.body)
 rescue JSON::ParserError => e
-  warn "bili api returned non-JSON (HTTP #{res.code}): #{res.body[0, 200].gsub(/\s+/, ' ')}"
-  raise e
+  # 被网关/CDN 拦截（-412 等）时可能返回 HTML；按 README 承诺：失败也输出 []，避免下游解析崩溃
+  warn "bili api returned non-JSON (HTTP #{res.code}): #{res.body[0, 200].to_s.gsub(/\s+/, ' ')}"
+  print JSON.generate([])
+  exit 1
 end
 #pp j
 
@@ -184,7 +207,7 @@ end
 
 #binding.pry
 ret = j['data']['items'].filter { |item| item["type"] != 'DYNAMIC_TYPE_LIVE_RCMD' }.map { |item| parseItem item }
-print JSON.generate(ret)
+puts JSON.generate(ret)
 
 #binding.pry
 

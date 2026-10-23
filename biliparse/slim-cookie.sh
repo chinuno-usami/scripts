@@ -70,8 +70,8 @@ END {
 
     name = substr(t, 1, eq - 1)
     val  = substr(t, eq + 1)
-    sub(/^[^A-Za-z0-9_.%-]+/, "", name)   # 去掉 BOM / 引号 / "cookie:" 之类的前缀残留
-    sub(/^cookie:$/, "", name)
+    sub(/^[^A-Za-z0-9_.%-]+/, "", name)   # 去掉 BOM / 引号等前缀残留
+    sub(/^[Cc]ookie:/, "", name)           # 处理 "cookie:SESSDATA=xxx" 粘连写法
 
     if (name !~ /^[A-Za-z0-9_.%-]+$/) continue
     if (val == "") continue

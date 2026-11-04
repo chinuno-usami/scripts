@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+events.json
+frames/
+scores.csv
+scores.png
+.DS_Store
+output/
+tools/
+*.zip

@@ -16,3 +16,7 @@ mac上wireguard掉线重启。解决ddns对端掉线ip变化后无法恢复连�
 
 b站动态解析，自用接入huginn解析转为rss。  
 早期人工手搓，现在出问题后用ai维护
+
+## motion-detect
+
+检测视频变化画面和对应时间位置

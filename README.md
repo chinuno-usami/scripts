@@ -20,3 +20,7 @@ b站动态解析，自用接入huginn解析转为rss。
 ## motion-detect
 
 检测视频变化画面和对应时间位置
+
+## wmcr-patch
+
+Webcam Motion Capture 去除联网部分。适配1.12.2版本

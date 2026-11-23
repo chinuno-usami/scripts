@@ -12,7 +12,8 @@
 #   └── Webcam Motion Receiver_Data/il2cpp_data/Metadata/global-metadata.dat
 
 python3 wmcr_patch.py check            # 看当前是原版/已打补丁
-python3 wmcr_patch.py all --strict     # 打补丁 + 校验 + 可达性审计（推荐）
+python3 wmcr_patch.py all --strict                  # 离线补丁（干净，但登录相关面板不出现）
+python3 wmcr_patch.py all --strict --auto-login     # ★ 实测可用：开机即"已登录"，直接点 Try for Free
 # 产物在 out_patched/，按提示覆盖回游戏目录（先备份）
 ```
 
@@ -40,6 +41,17 @@ python3 wmcr_patch.py all              # 不带 --strict
 | `all` | `apply` + `verify` + `audit` |
 
 `apply` / `verify` / `all` 支持 `--meta-only`：只处理 `global-metadata.dat`，完全不依赖 RVA。
+
+`apply --auto-login`（★ 推荐）：把 `fi.Update` 里的登录门控
+（`cmpb $0,0x5b8; je ...`）换成 `movb $1,0x5b8` + 6×nop ——
+**每帧强制"已登录"**，不需要点 Login。实测：启动后直接点 "Try for Free" 即可使用 VMC。
+
+`apply --fake-login=mark`：把 `fi.fe.MoveNext` 换成"只置 `logged_in=1`"的短桩，
+需要点一次 Login 才生效。
+
+`apply --fake-login`（=call）：额外 `call fi.djk()` 立即刷新面板。
+**不要用**：`fi.djk` 在未真正登录时会因 UI 字段为 null 抛 `NullReferenceException`，
+而这段注入代码没有 unwind 记录 → 异常展开失败 → 进程崩溃。
 
 通用参数：`--src`、`--out`（放子命令前后都行）；`apply/all` 另有 `--dry-run`、`--force`。
 
@@ -152,6 +164,44 @@ python3 wmcr_patch.py apply --meta-only     # 兜底：任何版本都能用
 | 服务端路径改名（`program_info.php` 等） | 改 `META_TARGETS` 里的字符串（一行） |
 | GUPS 换了 XOR key / 算法 | 改 `_enc()` 与 `resolve_meta()` 的 key（一处常量） |
 | 混淆器改到"方法体加密/自校验" | hex patch 可能失效，改用运行时 hook（BepInEx/Harmony、MinHook） |
+
+## 实测结论（1.12.2 / Unity 6000.0.68f1 构建）
+
+| 操作 | 结果 |
+|---|---|
+| `all --strict` | 无面板、无网络、不崩（纯离线） |
+| `all --strict --auto-login` | **启动 → 直接点 "Try for Free" → VMC 正常** ✅ |
+| `all --strict --fake-login=mark` | 点 Login（随便填）→ 点 "Try for Free" → VMC 正常 ✅ |
+| `all --strict --fake-login`（call） | 点 Login 后**崩溃**（djk 抛 null + 无 unwind）❌ |
+
+## 「登录后才显示」的面板
+
+`fi.djk()`（RVA `0x637D40`）是"按登录标志刷新面板"的函数，里面有 4 处
+`movzbl 0x5b8(%rbx),%edx` + `GameObject.SetActive(edx)`（登录后才显示），
+以及 2 处 `SetActive(false)`（隐藏登录面板）。它的**唯一调用点**是
+`fi.fe.MoveNext` 的成功分支（`movb $1,0x5b8` 之后 `call fi.djk`）。
+
+默认补丁把 `fe.MoveNext` 换成 `return false`，因此 `djk` 永不执行。
+
+**注意**：不要在注入代码里直接 `call fi.djk`。`djk` 里每个 UI 字段前都有
+`test/je → il2cpp_codegen_raise_null_reference_exception`；未真正登录时某些字段为 null，
+一抛异常就要走 `.pdata` 展开，而注入代码没有 unwind 记录 → **进程崩溃**（实测复现）。
+
+正确做法是 `--auto-login`：只改 `fi.Update` 里的登录门控（函数体内、有 unwind）：
+
+```
+原: 80 be b8 05 00 00 00   cmpb $0, 0x5b8(%rsi)
+    0f 84 2d 01 00 00      je   0x18061446c
+新: c6 86 b8 05 00 00 01   movb $1, 0x5b8(%rsi)     ; 每帧强制已登录
+    90 90 90 90 90 90      nop ×6                    ; 取消门控
+```
+
+`0x5b8` 这个偏移是自动从 `fe.MoveNext` 里的 `movb $1,<off>` 提取的；
+定位时优先用补丁表里 `fi.Update` 的那个锚点，给了 `--script` 时还会用
+「该处 0x100 字节内出现 `Input.GetKeyDown` 调用」这一特征排除 GUPS 复制出来的假方法。
+
+**"Try for Free" 仍需要点一次**：它是普通 UI 按钮（`level0` 场景里文本为
+"Try for Free"），走 UI 事件绑定，不是登录校验，因此不受 `--auto-login` 影响。
 
 ## 两种补丁模式对比
 

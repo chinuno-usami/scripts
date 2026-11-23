@@ -91,6 +91,14 @@ LOCATE_TARGETS = [
 
 LOOPBACK = "http://127.0.0.1:1/"
 
+# --fake-login：把 fi.fe.MoveNext 入口换成一段 shellcode
+#   mov rdx,[rcx+0x20]          ; rdx = state machine.ukg (= fi)
+#   mov byte [rdx+0x5b8],1      ; fi.logged_in = true
+#   mov rcx,rdx / xor edx,edx   ; this, MethodInfo*=0
+#   call  fi.djk                ; 按登录状态刷新面板（SetActive(0x5B8)）
+#   xor eax,eax / ret           ; 协程结束，不发任何请求
+FAKE_LOGIN_MAGIC = bytes.fromhex("488b5120c682b805000001")
+
 
 def loopback_for(orig):
     """等长替换成本地地址，避免任何出网/DNS。"""
@@ -340,11 +348,13 @@ def classify_meta(data):
     return rows
 
 
-def apply_dll(data, force=False, dry_run=False, strict=False):
+def apply_dll(data, force=False, dry_run=False, strict=False, skip=()):
     _, sections = pe_info(data)
     n = 0
     for rva, off, state, desc, cur, optional in classify_dll(data):
         if optional and not strict:
+            continue
+        if rva in skip:
             continue
         orig, new = None, None
         for prva, porig, pnew, popt, _pd in dll_patches():
@@ -440,12 +450,23 @@ def cmd_check(args):
             print("  ERROR: %s" % e)
             rc = 2
             continue
+        states = []
         for row in rows:
             addr, state, desc, optional = row[0], row[2], row[3], row[5]
+            if key == GA_DLL and state != "patched" and _is_fake_login(data, row[1]):
+                state = "patched"
+                desc += " [fake-login]"
+            states.append(state)
             fmt = "  RVA 0x%-8X file+0x%-8X" if key == GA_DLL else "  @0x%-8X blob+0x%-6X"
             args2 = (addr, row[1]) if key == GA_DLL else (addr, row[1])
             print((fmt + " %-9s %s%s") % (args2 + (state, desc, "  [strict]" if optional else "")))
-        required = [r[2] for r in rows if not r[5]]
+        if key == GA_DLL:
+            _, _secs = pe_info(data)
+            _fe = _fe_rva()
+            _flag = _login_flag_off(data, _secs, _fe) if _fe else 0x5B8
+            for _o in _detect_auto_login(data, _flag):
+                print("  file+0x%-8X auto-login  : force logged_in=1 (flag +0x%X)" % (_o, _flag))
+        required = [states[i] for i, r in enumerate(rows) if not r[5]]
         print("  => %s%s" % (summary(required),
                              "  (strict patches: %s)"
                              % summary([r[2] for r in rows if r[5]]) if any(r[5] for r in rows) else ""))
@@ -462,14 +483,79 @@ def cmd_apply(args):
         if not os.path.exists(src_path):
             print("%s: MISSING %s -- skipped" % (key, src_path))
             continue
-        data = bytearray(open(src_path, "rb").read())
+        raw = open(src_path, "rb").read()
+        data = bytearray(raw)
         print("%s:" % key)
+        skip, sc, fe = set(), None, None
+        if getattr(args, "fake_login", False) and key == GA_DLL:
+            fe = _fe_rva()
+            if fe is None:
+                print("  WARN: --fake-login needs a 'login3' stub in the table, skipped")
+            else:
+                _, secs_raw = pe_info(raw)
+                sc, djk = fake_login_shellcode(raw, secs_raw, fe, args.fake_login)
+                skip.add(fe)
         try:
             fn = apply_dll if key == GA_DLL else apply_meta
-            total += fn(data, args.force, args.dry_run, args.strict)
+            if key == GA_DLL:
+                total += fn(data, args.force, args.dry_run, args.strict, skip)
+            else:
+                total += fn(data, args.force, args.dry_run, args.strict)
         except ValueError as e:
             print("  ERROR: %s" % e)
             continue
+        if getattr(args, "auto_login", False) and key == GA_DLL:
+            _, secs_raw = pe_info(raw)
+            fe = _fe_rva()
+            flag_off = _login_flag_off(raw, secs_raw, fe) if fe else 0x5B8
+            anchor = None
+            for rva, orig, new, opt, desc in dll_patches():
+                if "polling" in desc:
+                    anchor = rva
+                    break
+            keydown = None
+            _names = _load_script(getattr(args, "script", None))
+            for _r, _n in _names.items():
+                if _n == "UnityEngine.Input$$GetKeyDown":
+                    keydown = _r
+                    break
+            sites = _auto_login_sites(raw, secs_raw, flag_off, anchor, keydown_rva=keydown)
+            # 跳过与补丁表重叠的位置（例如轮询门控那里已被 P6 的 jmp 覆盖）
+            occupied = [(rva, rva + len(h(new))) for rva, orig, new, opt, desc in dll_patches()]
+            sites = [x for x in sites
+                     if not any(off_to_rva(secs_raw, x) < b and a < off_to_rva(secs_raw, x) + 13
+                                for a, b in occupied)]
+            if not sites:
+                print("  WARN: --auto-login could not locate the login gate")
+            for s_off in sites:
+                new13 = _auto_login_bytes(flag_off, raw[s_off + 1])
+                if bytes(data[s_off:s_off + 13]) == new13:
+                    print("  skip   file+0x%-8X auto-login already in place" % s_off)
+                    continue
+                if not args.dry_run:
+                    data[s_off:s_off + 13] = new13
+                total += 1
+                print("  %-6s file+0x%-8X auto-login: force logged_in=1 every frame (flag +0x%X)"
+                      % ("patch" if not args.dry_run else "would", s_off, flag_off))
+        if sc:
+            _, sections = pe_info(data)
+            off = rva_to_off(sections, fe)
+            cur = bytes(data[off:off + len(sc)])
+            if cur == sc:
+                print("  skip   RVA 0x%-8X fake-login shellcode already in place" % fe)
+            else:
+                if cur[:3] not in (FAKE_LOGIN_MAGIC[:3], raw[off:off + 3]) and not args.force:
+                    print("  ERROR: fake-login site looks unexpected (%s), use --force" % cur[:3].hex())
+                    continue
+                if not args.dry_run:
+                    data[off:off + len(sc)] = sc
+                total += 1
+                if djk:
+                    print("  %-6s RVA 0x%-8X fake-login[call]: fi.logged_in=1 + call fi.djk() 0x%X"
+                          % ("patch" if not args.dry_run else "would", fe, djk))
+                else:
+                    print("  %-6s RVA 0x%-8X fake-login[mark]: fi.logged_in=1 (no UI refresh)"
+                          % ("patch" if not args.dry_run else "would", fe))
         if args.dry_run:
             continue
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -499,12 +585,23 @@ def cmd_verify(args):
         data = open(p, "rb").read()
         rows = classify_dll(data) if key == GA_DLL else classify_meta(data)
         want = [r for r in rows if args.strict or not r[5]]
+        ok_all = True
         for row in want:
-            if row[2] != "patched":
+            good = row[2] == "patched" or (key == GA_DLL and _is_fake_login(data, row[1]))
+            if not good:
                 print("  FAIL  RVA/@0x%X -> %s  (%s)" % (row[0], row[2], row[3]))
                 bad += 1
+                ok_all = False
+        if key == GA_DLL and getattr(args, "auto_login", False):
+            _, _secs = pe_info(data)
+            _fe = _fe_rva()
+            _flag = _login_flag_off(data, _secs, _fe) if _fe else 0x5B8
+            if not _detect_auto_login(data, _flag):
+                print("  FAIL  auto-login patch missing")
+                bad += 1
+                ok_all = False
         print("%s: %s  sha256 %s"
-              % (key, "OK" if all(r[2] == "patched" for r in want) else "FAIL", sha256(data)[:16]))
+              % (key, "OK" if ok_all else "FAIL", sha256(data)[:16]))
     print("\nRESULT: %s" % ("PASS" if bad == 0 else "FAIL (%d)" % bad))
     return 0 if bad == 0 else 1
 
@@ -956,6 +1053,127 @@ def cmd_locate(args):
     return 0
 
 
+def _fe_rva():
+    """补丁表里 login3 那个 MoveNext 的 RVA（fake-login 要写在这里）。"""
+    for rva, orig, new, optional, desc in dll_patches():
+        if new.upper() in ("33C0C3",) and "login3" in desc:
+            return rva
+    return None
+
+
+def _derive_djk(data, sections, fe_rva):
+    """在原始 fe.MoveNext 里找 `mov byte [reg+0x5b8],1` 之后紧跟的 call = fi.djk。"""
+    try:
+        off = rva_to_off(sections, fe_rva)
+    except ValueError:
+        return None
+    end = min(off + 0x1000, len(data))
+    i = off
+    while True:
+        i = data.find(b"\xc6", i, end)
+        if i < 0 or i + 7 > end:
+            return None
+        if data[i + 2:i + 7] == b"\xb8\x05\x00\x00\x01":
+            j = data.find(b"\xe8", i + 7, min(i + 7 + 32, end))
+            if j < 0:
+                return None
+            rel = struct.unpack_from("<i", data, j + 1)[0]
+            return off_to_rva(sections, j + 5) + rel
+        i += 1
+
+
+def fake_login_shellcode(raw, sections, fe_rva, mode="call"):
+    """mode='mark' 只置登录标志；mode='call' 额外调用 fi.djk() 刷新面板。
+
+    注意栈对齐：MoveNext 入口的 rsp ≡ 8 (mod 16)，直接 call 会让 djk 入口
+    ≡ 0，djk 的 `movq %rsi,0x30(%rsp)` 就会踩到 MoveNext 的返回地址 → 崩溃。
+    所以在 call 前后加 sub/add rsp,8。
+    """
+    ins = bytearray(FAKE_LOGIN_MAGIC)   # mov rdx,[rcx+0x20]; mov byte [rdx+0x5b8],1
+    if mode == "mark":
+        ins += bytes.fromhex("33c0c3")  # xor eax,eax ; ret
+        return bytes(ins), None
+    djk = _derive_djk(raw, sections, fe_rva) or 0x637D40
+    ins += bytes.fromhex("4889d1")      # mov rcx, rdx
+    ins += bytes.fromhex("33d2")        # xor edx, edx      (MethodInfo* = 0)
+    ins += bytes.fromhex("4883ec08")    # sub rsp, 8        (restore 16B alignment)
+    co = len(ins)
+    ins += b"\xe8" + struct.pack("<i", djk - (fe_rva + co + 5))
+    ins += bytes.fromhex("4883c408")    # add rsp, 8
+    ins += bytes.fromhex("33c0c3")      # xor eax,eax ; ret
+    return bytes(ins), djk
+
+
+def _login_flag_off(raw, sections, fe_rva):
+    """从 fe.MoveNext 里的 `movb $1, <off>(%reg)` 取出登录标志的字段偏移。"""
+    try:
+        off = rva_to_off(sections, fe_rva)
+    except ValueError:
+        return 0x5B8
+    end = min(off + 0x1000, len(raw))
+    i = off
+    while True:
+        i = raw.find(b"\xc6", i, end)
+        if i < 0 or i + 7 > end:
+            return 0x5B8
+        modrm = raw[i + 1]
+        if raw[i + 6] == 0x01 and (modrm & 0xC0) in (0x40, 0x80):
+            return struct.unpack_from("<I", raw, i + 2)[0]
+        i += 1
+
+
+def _auto_login_sites(raw, sections, flag_off, anchor=None, window=0x1200,
+                      keydown_rva=None):
+    """找 `cmpb $0, <flag>(%reg)` + `je` 这种登录门控（13 字节）。
+
+    GUPS 会把同样的代码复制成很多"假方法"，所以只取 anchor（fi.Update 里的
+    已知补丁点）附近 window 内的那一处，避免改到别的方法。
+    """
+    pat = struct.pack("<I", flag_off) + b"\x00\x0f\x84"
+    hits = []
+    for name, va, vsize, rawptr, rawsize in sections:
+        if name not in (".text", "il2cpp"):
+            continue
+        pos, end = rawptr, rawptr + rawsize
+        while True:
+            pos = raw.find(pat, pos, end)
+            if pos < 0:
+                break
+            if pos - 2 >= rawptr and raw[pos - 2] == 0x80 and pos + 10 <= end:
+                ok = anchor is None or abs(off_to_rva(sections, pos - 2) - anchor) <= window
+                if ok and keydown_rva is not None:
+                    rva = off_to_rva(sections, pos - 2)
+                    ok = keydown_rva in _calls_in(raw, sections, rva, rva + 0x100)
+                if ok:
+                    hits.append(pos - 2)
+            pos += 1
+    return hits
+
+
+def _auto_login_bytes(flag_off, modrm_orig):
+    """movb $1,<flag>(%reg) + 6×nop —— 每帧强制"已登录"，且取消 je 跳过。"""
+    return bytes([0xC6, (modrm_orig & 0xC7) | 0x00]) + struct.pack("<I", flag_off) + \
+        b"\x01" + b"\x90" * 6
+
+
+def _detect_auto_login(data, flag_off):
+    """返回所有 auto-login 补丁点 [(file_off, ...)]（按 6 个 nop 的魔数识别）。"""
+    pat = struct.pack("<I", flag_off) + b"\x01" + b"\x90" * 6
+    hits, pos = [], 0
+    while True:
+        pos = data.find(pat, pos)
+        if pos < 0:
+            break
+        if pos >= 2 and data[pos - 2] == 0xC6 and (data[pos - 1] & 0xC0) in (0x40, 0x80):
+            hits.append(pos - 2)
+        pos += 1
+    return hits
+
+
+def _is_fake_login(data, off):
+    return data[off:off + len(FAKE_LOGIN_MAGIC)] == FAKE_LOGIN_MAGIC
+
+
 def _is_nop_hex(new):
     n = len(new) // 2
     return n > 0 and new.upper() == "90" * n
@@ -1273,9 +1491,18 @@ def build_parser():
     p.add_argument("--force", action="store_true", help="write bytes even if they look unexpected")
     p.add_argument("--meta-only", action="store_true",
                    help="only patch global-metadata.dat (no RVA needed, works across builds)")
+    p.add_argument("--fake-login", nargs="?", const="call", default=None,
+                   choices=["call", "mark"],
+                   help="replace fi.fe.MoveNext with a login stub ('call' also refreshes the UI via "
+                        "fi.djk - may crash on null UI fields; 'mark' only sets the flag)")
+    p.add_argument("--auto-login", action="store_true",
+                   help="force logged_in=1 every frame in fi.Update (no Login click needed)")
+    p.add_argument("--script", default="out/script.json",
+                   help="Il2CppDumper script.json, used to pin the auto-login site (optional)")
     p = add("verify", cmd_verify, "verify patched files under --out")
     p.add_argument("--strict", action="store_true", help="require the strict patches too")
     p.add_argument("--meta-only", action="store_true", help="ignore the DLL patches")
+    p.add_argument("--auto-login", action="store_true", help="require the auto-login patch")
     add("revert", cmd_revert, "restore --out files from --src")
     p = add("selftest", cmd_selftest, "apply/verify/revert in memory (no files written)")
     p.add_argument("--strict", action="store_true")
@@ -1289,6 +1516,9 @@ def build_parser():
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true")
     p.add_argument("--meta-only", action="store_true")
+    p.add_argument("--fake-login", nargs="?", const="call", default=None,
+                   choices=["call", "mark"])
+    p.add_argument("--auto-login", action="store_true")
     p.add_argument("--script", default="out/script.json")
     p = add("locate", cmd_locate, "re-locate patch points (run after a game update)")
     p.add_argument("--script", default="out/script.json")
